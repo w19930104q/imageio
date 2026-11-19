@@ -12,6 +12,85 @@ from .request import (
 )
 
 
+def _dependency_skip_reason(config, err):
+    """Human-readable reason why a backend was skipped due to missing deps."""
+
+    return (
+        f"missing dependency ({err}); "
+        f"install it with `pip install imageio[{config.install_name}]`"
+    )
+
+
+def _try_backends_in_order(
+    priority, request, skipped_backends, missing_dependencies, **kwargs
+):
+    """Try to initialize backends in the given (priority) order.
+
+    Returns a ``(plugin_name, plugin_instance)`` tuple for the first
+    backend that initializes successfully, or ``None`` if none of the
+    backends can handle the request.
+
+    Every skipped backend is recorded in ``skipped_backends`` (in the
+    order in which backends were tried) together with the reason it was
+    skipped, so that fallback decisions remain traceable. Backends that
+    were skipped because of a missing dependency are additionally
+    recorded in ``missing_dependencies``.
+    """
+
+    for plugin_name in priority:
+        config = known_plugins[plugin_name]
+
+        try:
+            candidate_plugin = config.plugin_class
+        except ImportError as err:
+            # the plugin (or one of its dependencies) is not installed
+            missing_dependencies.append((config, err))
+            skipped_backends.append((plugin_name, _dependency_skip_reason(config, err)))
+            continue
+
+        try:
+            plugin_instance = candidate_plugin(request, **kwargs)
+        except InitializationError as err:
+            # the plugin can not handle this particular request
+            skipped_backends.append(
+                (plugin_name, f"can not handle the request ({err})")
+            )
+            continue
+        except ImportError as err:
+            # the plugin imports, but a dependency is missing at runtime
+            missing_dependencies.append((config, err))
+            skipped_backends.append((plugin_name, _dependency_skip_reason(config, err)))
+            continue
+
+        return plugin_name, plugin_instance
+
+    return None
+
+
+def _warn_about_fallback(selected_plugin, missing_dependencies):
+    """Warn that a fallback backend is used due to missing dependencies."""
+
+    reasons = "; ".join(
+        f"`{config.name}` ({err})" for config, err in missing_dependencies
+    )
+    install_hints = ", ".join(
+        sorted(
+            {
+                f"`pip install imageio[{config.install_name}]`"
+                for config, _ in missing_dependencies
+            }
+        )
+    )
+    warnings.warn(
+        f"Falling back to `{selected_plugin}` because the preferred "
+        f"backend(s) are unavailable due to missing dependencies: "
+        f"{reasons}. To use the preferred backend(s), install the missing "
+        f"dependencies: {install_hints}.",
+        UserWarning,
+        stacklevel=4,
+    )
+
+
 def imopen(
     uri,
     io_mode,
@@ -73,6 +152,17 @@ def imopen(
     -----
     Registered plugins are controlled via the ``known_plugins`` dict in
     ``imageio.config``.
+
+    When searching for a suitable plugin, imopen walks a fallback chain:
+    plugins are tried in the order given by the matching format's
+    priority list (based on ``format_hint`` or the file's extension),
+    followed by all remaining registered plugins. If a plugin can not be
+    used - e.g. because one of its dependencies is not installed - the
+    next plugin in the chain is tried instead of failing outright. The
+    reason for each skipped plugin is recorded: if a fallback plugin is
+    used because a preferred plugin is missing dependencies, a warning
+    is emitted, and if no plugin can open the resource, the raised
+    exception lists each tried plugin together with its failure reason.
 
     Passing a ``Request`` as the uri is only supported if ``legacy_mode``
     is ``True``. In this case ``io_mode`` is ignored.
@@ -155,24 +245,27 @@ def imopen(
         request.finish()
         raise err_type(err_msg) from err_from
 
+    # Per-level record of why candidate backends were skipped, in the
+    # order in which they were tried. Used to keep fallback decisions
+    # traceable and to explain why no backend could be found.
+    skipped_backends = list()
+    missing_dependencies = list()
+
     # fast-path based on format_hint
     if request.format_hint is not None:
         for candidate_format in known_extensions[format_hint]:
-            for plugin_name in candidate_format.priority:
-                config = known_plugins[plugin_name]
+            selected = _try_backends_in_order(
+                candidate_format.priority,
+                request,
+                skipped_backends,
+                missing_dependencies,
+                **kwargs,
+            )
 
-                try:
-                    candidate_plugin = config.plugin_class
-                except ImportError:
-                    # not installed
-                    continue
-
-                try:
-                    plugin_instance = candidate_plugin(request, **kwargs)
-                except InitializationError:
-                    # file extension doesn't match file type
-                    continue
-
+            if selected is not None:
+                plugin_name, plugin_instance = selected
+                if missing_dependencies:
+                    _warn_about_fallback(plugin_name, missing_dependencies)
                 return plugin_instance
         else:
             resource = (
@@ -183,21 +276,18 @@ def imopen(
     # fast-path based on file extension
     if request.extension in known_extensions:
         for candidate_format in known_extensions[request.extension]:
-            for plugin_name in candidate_format.priority:
-                config = known_plugins[plugin_name]
+            selected = _try_backends_in_order(
+                candidate_format.priority,
+                request,
+                skipped_backends,
+                missing_dependencies,
+                **kwargs,
+            )
 
-                try:
-                    candidate_plugin = config.plugin_class
-                except ImportError:
-                    # not installed
-                    continue
-
-                try:
-                    plugin_instance = candidate_plugin(request, **kwargs)
-                except InitializationError:
-                    # file extension doesn't match file type
-                    continue
-
+            if selected is not None:
+                plugin_name, plugin_instance = selected
+                if missing_dependencies:
+                    _warn_about_fallback(plugin_name, missing_dependencies)
                 return plugin_instance
 
     # error out for read-only special targets
@@ -232,15 +322,34 @@ def imopen(
 
         try:
             plugin_instance = config.plugin_class(request, **kwargs)
-        except InitializationError:
+        except InitializationError as err:
+            skipped_backends.append(
+                (config.name, f"can not handle the request ({err})")
+            )
             continue
-        except ImportError:
+        except ImportError as err:
+            # Recorded for the final error message, but not treated as a
+            # missing preferred backend: the sweep speculatively tries
+            # every plugin, so uninstalled optional plugins are expected
+            # here and must not trigger a fallback warning.
+            skipped_backends.append((config.name, _dependency_skip_reason(config, err)))
             continue
         else:
+            if missing_dependencies:
+                _warn_about_fallback(config.name, missing_dependencies)
             return plugin_instance
 
     err_type = ValueError if legacy_mode else IOError
     err_msg = f"Could not find a backend to open `{source}`` with iomode `{io_mode}`."
+
+    # explain, level by level, why each tried backend was skipped
+    if skipped_backends:
+        reasons = "\n".join(
+            f"  {plugin_name}: {reason}" for plugin_name, reason in skipped_backends
+        )
+        err_msg += (
+            f"\nThe following backends were tried in order and skipped:\n{reasons}"
+        )
 
     # check if a missing plugin could help
     if request.extension in known_extensions:

@@ -49,6 +49,13 @@ class BrokenDummyPlugin:
         raise ValueError("Something went wrong.")
 
 
+class LazyDependencyDummyPlugin:
+    """A dummy plugin whose (lazily imported) dependency is missing"""
+
+    def __init__(self, request):
+        raise ImportError("No module named 'missing_dependency'")
+
+
 @pytest.mark.needs_internet
 def test_fetching(tmp_path):
     """Test fetching of files"""
@@ -910,6 +917,110 @@ def test_imopen_installable_plugin(clear_plugins):
 
     with pytest.raises(IOError):
         iio.imopen("foo.bar", "w", legacy_mode=False)
+
+
+def _register_fallback_chain():
+    """Register an extension whose preferred plugins lack dependencies."""
+
+    # a plugin that can not be imported at all ...
+    iio.config.known_plugins["missing"] = PluginConfig(
+        name="missing", class_name="Nope", module_name="non_existant"
+    )
+    # ... a plugin whose dependency is missing at construction time ...
+    iio.config.known_plugins["lazy"] = PluginConfig(
+        name="lazy", class_name="LazyDependencyDummyPlugin", module_name="test_core"
+    )
+    # ... and a working plugin as the last resort
+    iio.config.known_plugins["working"] = PluginConfig(
+        name="working", class_name="EpicDummyPlugin", module_name="test_core"
+    )
+    iio.config.known_extensions[".xyz"] = [
+        FileExtension(extension=".xyz", priority=["missing", "lazy", "working"])
+    ]
+
+
+def test_imopen_fallback_on_missing_dependency(clear_plugins, tmp_path):
+    # plugins missing a dependency must not fail the whole read; imopen
+    # should fall back to the next usable backend in the priority order
+    _register_fallback_chain()
+
+    image_file = tmp_path / "foo.xyz"
+    image_file.write_bytes(b"garbage")
+
+    with pytest.warns(UserWarning) as record:
+        instance = iio.imopen(image_file, "r", legacy_mode=False)
+
+    assert isinstance(instance, EpicDummyPlugin)
+
+    # the warning makes each skipped backend and its reason traceable
+    warning = str(record[-1].message)
+    assert "working" in warning
+    assert "missing" in warning
+    assert "lazy" in warning
+
+
+def test_imopen_fallback_reasons_on_total_failure(clear_plugins, tmp_path):
+    # if no backend can open the resource, the error must explain, level
+    # by level, why each tried backend was skipped
+    _register_fallback_chain()
+    iio.config.known_plugins["working"] = PluginConfig(
+        name="working", class_name="UselessDummyPlugin", module_name="test_core"
+    )
+
+    image_file = tmp_path / "foo.xyz"
+    image_file.write_bytes(b"garbage")
+
+    with pytest.raises(IOError) as excinfo:
+        iio.imopen(image_file, "r", legacy_mode=False)
+
+    err_msg = str(excinfo.value)
+    assert "missing" in err_msg
+    assert "lazy" in err_msg
+    assert "working" in err_msg
+    assert "missing dependency" in err_msg
+    assert "can not handle" in err_msg
+
+    # reasons are reported in the order the backends were tried
+    assert err_msg.index("missing") < err_msg.index("lazy")
+    assert err_msg.index("lazy") < err_msg.index("working")
+
+
+def test_imopen_fallback_result_consistency(tmp_path, monkeypatch):
+    # the image read via a fallback backend must match the image read
+    # via the preferred backend
+    rng = np.random.default_rng(42)
+    arr = rng.integers(0, 256, size=(32, 32, 3), dtype=np.uint8)
+    image_file = tmp_path / "test.png"
+    iio.v3.imwrite(image_file, arr)
+
+    expected = iio.v3.imread(image_file)
+
+    # simulate the preferred plugin (pillow) being uninstalled
+    monkeypatch.setitem(
+        iio.config.known_plugins,
+        "pillow",
+        PluginConfig(
+            name="pillow",
+            class_name="PillowPlugin",
+            module_name="imageio.plugins.pillow_missing",
+        ),
+    )
+
+    with pytest.warns(UserWarning, match="Falling back"):
+        actual = iio.v3.imread(image_file)
+
+    assert np.array_equal(expected, actual)
+
+
+def test_imopen_no_fallback_warning_when_healthy(tmp_path, recwarn):
+    # behavior is unchanged when no dependency is missing
+    arr = np.zeros((8, 8, 3), dtype=np.uint8)
+    image_file = tmp_path / "test.png"
+    iio.v3.imwrite(image_file, arr)
+
+    iio.v3.imread(image_file)
+
+    assert not any("Falling back" in str(w.message) for w in recwarn.list)
 
 
 def test_legacy_object_image_writing(tmp_path):
