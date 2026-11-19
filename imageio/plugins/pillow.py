@@ -38,7 +38,7 @@ from PIL import ExifTags, GifImagePlugin, Image, ImageSequence, UnidentifiedImag
 from PIL import __version__ as pil_version  # type: ignore
 
 from ..core.request import URI_BYTES, InitializationError, IOMode, Request
-from ..core.v3_plugin_api import ImageProperties, PluginV3
+from ..core.v3_plugin_api import ImageProperties, PluginV3, check_frame_index
 from ..typing import ArrayLike
 
 
@@ -149,6 +149,12 @@ class PillowPlugin(PluginV3):
 
         self._request.finish()
 
+    @property
+    def _n_frames(self) -> int:
+        """The number of frames stored in the current ImageResource."""
+
+        return getattr(self._image, "n_frames", 1)
+
     def read(
         self,
         *,
@@ -169,11 +175,13 @@ class PillowPlugin(PluginV3):
         index : int
             If the ImageResource contains multiple ndimages, and index is an
             integer, select the index-th ndimage from among them and return it.
-            If index is an ellipsis (...), read all ndimages in the file and
-            stack them along a new batch dimension and return them. If index is
-            None, this plugin reads the first image of the file (index=0) unless
-            the image is a GIF or APNG, in which case all images are read
-            (index=...).
+            Indices are zero-based and follow the order in which the ndimages
+            appear in the file. If index is an ellipsis (...), read all
+            ndimages in the file and stack them along a new batch dimension
+            and return them. If index is None, this plugin reads the first
+            image of the file (index=0) unless the image is a GIF or APNG, in
+            which case all images are read (index=...). If the index is out of
+            bounds (including negative indices) an ``IndexError`` is raised.
         mode : str
             Convert the image to the given mode before returning it. If None,
             the mode will be left unchanged. Possible modes can be found at:
@@ -248,7 +256,7 @@ class PillowPlugin(PluginV3):
                 index = 0
 
         if isinstance(index, int):
-            # will raise IO error if index >= number of frames in image
+            check_frame_index(index, self._n_frames)
             self._image.seek(index)
             image = self._apply_transforms(
                 self._image, mode, rotate, apply_gamma, writeable_output
@@ -517,7 +525,9 @@ class PillowPlugin(PluginV3):
             metadata. If index is an ellipsis (...), read and return global
             metadata. If index is None, this plugin reads metadata from the
             first image of the file (index=0) unless the image is a GIF or APNG,
-            in which case global metadata is read (index=...).
+            in which case global metadata is read (index=...). If the index is
+            out of bounds (including negative indices) an ``IndexError`` is
+            raised.
         exclude_applied : bool
             If True, exclude metadata fields that are applied to the image while
             reading. For example, if the binary data contains a rotation flag,
@@ -529,6 +539,16 @@ class PillowPlugin(PluginV3):
         metadata : dict
             A dictionary of format-specific metadata.
 
+        Notes
+        -----
+        For animated images (more than one frame), the global metadata
+        (``index=...``) reports timing information using the same conventions
+        as ImageIO's video plugins: ``duration`` is the total duration of the
+        animation in seconds and ``fps`` is the average number of frames per
+        second. Per-frame metadata (integer ``index``) keeps the format-native
+        ``duration`` value, which is expressed in milliseconds for formats
+        like GIF.
+
         """
 
         if index is None:
@@ -539,12 +559,35 @@ class PillowPlugin(PluginV3):
             else:
                 index = 0
 
-        if isinstance(index, int) and self._image.tell() != index:
-            self._image.seek(index)
+        if index is Ellipsis:
+            self._image.seek(0)
+        elif isinstance(index, int):
+            check_frame_index(index, self._n_frames)
+            if self._image.tell() != index:
+                self._image.seek(index)
 
         metadata = self._image.info.copy()
         metadata["mode"] = self._image.mode
         metadata["shape"] = self._image.size
+
+        if index is Ellipsis and self._n_frames > 1:
+            # Standardize timing metadata for animations so that it matches
+            # the conventions used by ImageIO's video plugins (e.g. pyav):
+            # ``duration`` is the total duration in seconds and ``fps`` is
+            # the average framerate. Per-frame metadata keeps the
+            # format-native (millisecond) duration.
+            position = self._image.tell()
+            durations = [
+                frame.info.get("duration")
+                for frame in ImageSequence.Iterator(self._image)
+            ]
+            self._image.seek(position)
+
+            if any(duration is not None for duration in durations):
+                total_seconds = sum(d or 0 for d in durations) / 1000.0
+                metadata["duration"] = total_seconds
+                if total_seconds > 0:
+                    metadata["fps"] = self._n_frames / total_seconds
 
         if self._image.mode == "P" and not exclude_applied:
             metadata["palette"] = np.asarray(tuple(self._image.palette.colors.keys()))
@@ -574,7 +617,8 @@ class PillowPlugin(PluginV3):
             dimension. If index is None, this plugin reads and returns the
             properties of the first image (index=0) unless the image is a GIF or
             APNG, in which case it reads and returns the properties all images
-            (index=...).
+            (index=...). If the index is out of bounds (including negative
+            indices) an ``IndexError`` is raised.
 
         Returns
         -------
@@ -598,6 +642,7 @@ class PillowPlugin(PluginV3):
         if index is Ellipsis:
             self._image.seek(0)
         else:
+            check_frame_index(index, self._n_frames)
             self._image.seek(index)
 
         if self._image.mode == "P":
@@ -612,7 +657,7 @@ class PillowPlugin(PluginV3):
 
         n_frames: Optional[int] = None
         if index is ...:
-            n_frames = getattr(self._image, "n_frames", 1)
+            n_frames = self._n_frames
             shape = (n_frames, *shape)
 
         dummy = np.asarray(Image.new(mode, (1, 1)))

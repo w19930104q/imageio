@@ -39,7 +39,7 @@ import numpy as np
 
 from ..core import Request
 from ..core.request import URI_BYTES, InitializationError, IOMode
-from ..core.v3_plugin_api import ImageProperties, PluginV3
+from ..core.v3_plugin_api import ImageProperties, PluginV3, check_frame_index
 from ..typing import ArrayLike
 
 
@@ -71,10 +71,13 @@ class OpenCVPlugin(PluginV3):
         Parameters
         ----------
         index : int, Ellipsis
-            If int, read the index-th image from the ImageResource. If ``...``,
-            read all images from the ImageResource and stack them along a new,
-            prepended, batch dimension. If None (default), use ``index=0`` if
-            the image contains exactly one image and ``index=...`` otherwise.
+            If int, read the index-th image from the ImageResource. Indices
+            are zero-based and follow the order in which images appear in the
+            file. If ``...``, read all images from the ImageResource and stack
+            them along a new, prepended, batch dimension. If None (default),
+            use ``index=0`` if the image contains exactly one image and
+            ``index=...`` otherwise. If the index is out of bounds (including
+            negative indices) an ``IndexError`` is raised.
         colorspace : str, int
             The colorspace to convert into after loading and before returning
             the image. If None (default) keep grayscale images as is, convert
@@ -105,6 +108,7 @@ class OpenCVPlugin(PluginV3):
             retval, img = cv2.imreadmulti(self.file_handle, flags=flags)
             is_batch = True
         else:
+            check_frame_index(index, cv2.imcount(self.file_handle, flags))
             retval, img = cv2.imreadmulti(self.file_handle, index, 1, flags=flags)
             is_batch = False
 

@@ -51,7 +51,7 @@ import numpy as np
 import tifffile
 
 from ..core.request import URI_BYTES, InitializationError, Request
-from ..core.v3_plugin_api import ImageProperties, PluginV3
+from ..core.v3_plugin_api import ImageProperties, PluginV3, check_frame_index
 from ..typing import ArrayLike
 
 
@@ -133,10 +133,13 @@ class TifffilePlugin(PluginV3):
             the file and return ``page`` from it. If ``None`` and ``page`` is
             ``int`` read the page located at that (flat) index inside the file.
             If ``None`` and ``page=None``, read all ndimages from the file and
-            return them as a batch.
+            return them as a batch. Indices are zero-based; an out-of-bounds
+            index (including negative indices) raises an ``IndexError``.
         page : int
             If ``None`` return the full selected ndimage. If ``int``, read the
-            page at the selected index and return it.
+            page at the selected index and return it. Indices are zero-based;
+            an out-of-bounds page (including negative indices) raises an
+            ``IndexError``.
         kwargs : Any
             Additional kwargs are forwarded to TiffFile's ``as_array`` method.
 
@@ -160,6 +163,15 @@ class TifffilePlugin(PluginV3):
             pass
         else:
             index = 0
+
+        if isinstance(index, int):
+            check_frame_index(index, len(self._fh.series))
+
+        if page is not None:
+            if index is Ellipsis:
+                check_frame_index(page, len(self._fh.pages))
+            else:
+                check_frame_index(page, len(self._fh.series[index].pages))
 
         if index is Ellipsis and page is None:
             # read all series in the file and return them as a batch
@@ -275,6 +287,15 @@ class TifffilePlugin(PluginV3):
             or tiff tags (page-level).
         """
 
+        if isinstance(index, int):
+            check_frame_index(index, len(self._fh.series))
+
+        if page is not None:
+            if index is Ellipsis:
+                check_frame_index(page, len(self._fh.pages))
+            elif isinstance(index, int):
+                check_frame_index(page, len(self._fh.series[index].pages))
+
         if index is not Ellipsis and page is not None:
             target = self._fh.series[index].pages[page]
         elif index is not Ellipsis and page is None:
@@ -358,6 +379,15 @@ class TifffilePlugin(PluginV3):
         """
         index = index or 0
         page_idx = 0 if page in (None, Ellipsis) else page
+
+        if isinstance(index, int):
+            check_frame_index(index, len(self._fh.series))
+
+        if isinstance(page, int):
+            if index is Ellipsis:
+                check_frame_index(page, len(self._fh.pages))
+            else:
+                check_frame_index(page, len(self._fh.series[index].pages))
 
         if index is Ellipsis:
             target_page = self._fh.pages[page_idx]

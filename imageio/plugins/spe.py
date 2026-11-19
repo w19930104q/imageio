@@ -56,7 +56,7 @@ import warnings
 import numpy as np
 
 from ..core.request import Request, IOMode, InitializationError
-from ..core.v3_plugin_api import PluginV3, ImageProperties
+from ..core.v3_plugin_api import PluginV3, ImageProperties, check_frame_index
 
 logger = logging.getLogger(__name__)
 
@@ -531,13 +531,8 @@ class SpePlugin(PluginV3):
             read_offset = Spec.data_start
             count = self._shape[0] * self._shape[1] * self._len
             out_shape = (self._len, *self._shape)
-        elif index < 0:
-            raise IndexError(f"Index `{index}` is smaller than 0.")
-        elif index >= self._len:
-            raise IndexError(
-                f"Index `{index}` exceeds the number of frames stored in this file (`{self._len}`)."
-            )
         else:
+            check_frame_index(index, self._len)
             read_offset = (
                 Spec.data_start
                 + index * self._shape[0] * self._shape[1] * self._dtype.itemsize
@@ -878,6 +873,7 @@ class SpePlugin(PluginV3):
                 n_images=self._len,
                 is_batch=True,
             )
+        check_frame_index(index, self._len)
         return ImageProperties(shape=self._shape, dtype=self._dtype, is_batch=False)
 
     def _parse_header(

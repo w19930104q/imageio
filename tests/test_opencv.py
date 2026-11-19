@@ -62,7 +62,7 @@ def test_multi_reading(test_images, tmp_path):
     assert img.shape == (150, 200, 3)
     np.allclose(img, img_expected[3])
 
-    with pytest.raises(ValueError):
+    with pytest.raises(IndexError):
         iio.imread(tmp_path / "test.tiff", index=200, plugin="opencv")
 
 

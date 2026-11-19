@@ -5,6 +5,50 @@ from typing import Optional, Dict, Any, Tuple, Union, List, Iterator
 from dataclasses import dataclass
 
 
+def check_frame_index(index: int, n_images: Optional[int] = None) -> int:
+    """Validate a frame index against a known number of frames.
+
+    ImageIO uses a uniform indexing scheme for multi-frame ImageResources
+    (multi-page files, animations, and videos): frames are numbered ``0`` to
+    ``n_images - 1`` in the order in which they appear in the file. Any
+    integer outside this range - including negative indices - is invalid and
+    raises an ``IndexError``.
+
+    Parameters
+    ----------
+    index : int
+        The (zero-based) index of the frame to access.
+    n_images : int, None
+        The total number of frames stored in the ImageResource. If None (or
+        ``math.inf``), the number of frames is unknown and only negative
+        indices are rejected.
+
+    Returns
+    -------
+    index : int
+        The validated index (returned unchanged).
+
+    Raises
+    ------
+    IndexError
+        If ``index`` is negative or not smaller than ``n_images``.
+
+    """
+    if index < 0:
+        raise IndexError(
+            f"Index `{index}` is out of range. Negative indices are not"
+            " supported; use a non-negative index to select a frame."
+        )
+
+    if n_images is not None and index >= n_images:
+        raise IndexError(
+            f"Index `{index}` is out of range. The ImageResource contains"
+            f" {n_images} ndimage(s); valid indices are 0 to {n_images - 1}."
+        )
+
+    return index
+
+
 @dataclass
 class ImageProperties:
     """Standardized Metadata
@@ -142,10 +186,11 @@ class PluginV3:
         index : int
             If the ImageResource contains multiple ndimages, and index is an
             integer, select the index-th ndimage from among them and return it.
-            If index is an ellipsis (...), read all ndimages in the file and
-            stack them along a new batch dimension. If index is None, let the
-            plugin decide. If the index is out of bounds a ``ValueError`` is
-            raised.
+            Indices are zero-based and follow the order in which ndimages
+            appear in the file. If index is an ellipsis (...), read all
+            ndimages in the file and stack them along a new batch dimension.
+            If index is None, let the plugin decide. If the index is out of
+            bounds (including negative indices) an ``IndexError`` is raised.
         **kwargs : Any
             The read method may accept any number of plugin-specific keyword
             arguments to further customize the read behavior. Usually these
@@ -247,7 +292,7 @@ class PluginV3:
             while True:
                 try:
                     yield self.read(index=idx)
-                except ValueError:
+                except IndexError:
                     break
 
         It works very similar to ``read``, and you can consult the documentation

@@ -18,9 +18,12 @@ def imread(uri, *, index=None, plugin=None, extension=None, format_hint=None, **
         http address or file object, see the docs for more info.
     index : {int, Ellipsis, None}
         If the ImageResource contains multiple ndimages, and index is an
-        integer, select the index-th ndimage from among them and return it. If
-        index is an ellipsis (...), read all ndimages in the file and stack them
-        along a new batch dimension. If index is None, let the plugin decide.
+        integer, select the index-th ndimage from among them and return it.
+        Indices are zero-based and follow the order in which ndimages appear
+        in the file; an out-of-bounds index (including negative indices)
+        raises an ``IndexError``. If index is an ellipsis (...), read all
+        ndimages in the file and stack them along a new batch dimension. If
+        index is None, let the plugin decide.
     plugin : {str, None}
         The plugin to use. If set to None (default) imread will perform a
         search for a matching plugin. If not None, this takes priority over
@@ -164,9 +167,11 @@ def improps(uri, *, index=None, plugin=None, extension=None, **kwargs):
     index : int
         If the ImageResource contains multiple ndimages, and index is an
         integer, select the index-th ndimage from among them and return its
-        properties. If index is an ellipsis (...), read all ndimages in the file
-        and stack them along a new batch dimension and return their properties.
-        If index is None, let the plugin decide.
+        properties. Indices are zero-based and follow the order in which
+        ndimages appear in the file; an out-of-bounds index (including negative
+        indices) raises an ``IndexError``. If index is an ellipsis (...), read
+        all ndimages in the file and stack them along a new batch dimension and
+        return their properties. If index is None, let the plugin decide.
     plugin : {str, None}
         The plugin to be used. If None, performs a search for a matching
         plugin.
@@ -224,8 +229,10 @@ def immeta(
     index : {int, None}
         If the ImageResource contains multiple ndimages, and index is an
         integer, select the index-th ndimage from among them and return its
-        metadata. If index is an ellipsis (...), return global metadata. If
-        index is None, let the plugin decide the default.
+        metadata. Indices are zero-based and follow the order in which ndimages
+        appear in the file; an out-of-bounds index (including negative indices)
+        raises an ``IndexError``. If index is an ellipsis (...), return global
+        metadata. If index is None, let the plugin decide the default.
     plugin : {str, None}
         The plugin to be used. If None (default), performs a search for a
         matching plugin.

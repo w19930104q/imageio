@@ -4,7 +4,7 @@ import numpy as np
 
 from ..config import known_extensions
 from .request import InitializationError, IOMode
-from .v3_plugin_api import ImageProperties, PluginV3
+from .v3_plugin_api import ImageProperties, PluginV3, check_frame_index
 
 
 def _legacy_default_index(format):
@@ -123,8 +123,11 @@ class LegacyPlugin(PluginV3):
         ----------
         index : {integer, None}
             If the URI contains a list of ndimages return the index-th
-            image. If None, stack all images into an ndimage along the
-            0-th dimension (equivalent to np.stack(imgs, axis=0)).
+            image. Indices are zero-based and follow the order in which the
+            ndimages appear in the file; an out-of-bounds index (including
+            negative indices) raises an ``IndexError``. If None, stack all
+            images into an ndimage along the 0-th dimension (equivalent to
+            np.stack(imgs, axis=0)).
         kwargs : ...
             Further keyword arguments are passed to the reader. See
             :func:`.help` to see what arguments are available for a particular
@@ -145,6 +148,13 @@ class LegacyPlugin(PluginV3):
             return img
 
         reader = self.legacy_get_reader(**kwargs)
+        try:
+            n_images = reader.get_length()
+        except Exception:
+            # some legacy readers can't (or won't) report their length;
+            # in this case only negative indices can be ruled out
+            n_images = float("inf")
+        check_frame_index(index, None if n_images == float("inf") else n_images)
         return reader.get_data(index)
 
     def legacy_get_writer(self, **kwargs):
@@ -276,7 +286,7 @@ class LegacyPlugin(PluginV3):
         ----------
         index : int
             The index of the ndimage for which to return properties. If the
-            index is out of bounds a ``ValueError`` is raised. If ``None``,
+            index is out of bounds an ``IndexError`` is raised. If ``None``,
             return the properties for the ndimage stack. If this is impossible,
             e.g., due to shape mismatch, an exception will be raised.
 
@@ -336,8 +346,8 @@ class LegacyPlugin(PluginV3):
         Parameters
         ----------
         index : int
-            The index of the ndimage to read. If the index is out of bounds a
-            ``ValueError`` is raised. If ``None``, global metadata is returned.
+            The index of the ndimage to read. If the index is out of bounds an
+            ``IndexError`` is raised. If ``None``, global metadata is returned.
         exclude_applied : bool
             This parameter exists for compatibility and has no effect. Legacy
             plugins always report all metadata they find.

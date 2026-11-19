@@ -188,7 +188,7 @@ from numpy.lib.stride_tricks import as_strided
 
 from ..core import Request
 from ..core.request import URI_BYTES, InitializationError, IOMode
-from ..core.v3_plugin_api import ImageProperties, PluginV3
+from ..core.v3_plugin_api import ImageProperties, PluginV3, check_frame_index
 
 
 def _format_to_dtype(format: av.VideoFormat) -> np.dtype:
@@ -399,8 +399,11 @@ class PyAVPlugin(PluginV3):
         ----------
         index : int
             The index of the frame to read, e.g. ``index=5`` reads the 5th
-            frame. If ``...``, read all the frames in the video and stack them
-            along a new, prepended, batch dimension.
+            frame. Indices are zero-based and follow the order in which frames
+            appear in the video. If ``...``, read all the frames in the video
+            and stack them along a new, prepended, batch dimension. If the
+            index is out of bounds (including negative indices) an
+            ``IndexError`` is raised.
         format : str
             Set the returned colorspace. If not None (default: rgb24), convert
             the data into the given format before returning it. If ``None``
@@ -517,9 +520,20 @@ class PyAVPlugin(PluginV3):
             variable_fps = bool(self._container.format.flags & 0x400)
             constant_framerate = not variable_fps
 
+        # fail explicitly if the requested frame doesn't exist
+        check_frame_index(index, self._video_stream.frames or None)
+
         # note: cheap for contiguous incremental reads
-        self._seek(index, constant_framerate=constant_framerate)
-        desired_frame = next(self._decoder)
+        try:
+            self._seek(index, constant_framerate=constant_framerate)
+            desired_frame = next(self._decoder)
+        except StopIteration:
+            # the container doesn't know its frame count and the stream
+            # ended before the requested index was reached
+            raise IndexError(
+                f"Index `{index}` is out of range. The video stream ended"
+                " before a frame with this index was reached."
+            ) from None
         self._next_idx += 1
 
         self.set_video_filter(filter_sequence, filter_graph)
@@ -695,7 +709,8 @@ class PyAVPlugin(PluginV3):
         index : int
             The index of the ndimage for which to return properties. If ``...``
             (Ellipsis, default), return the properties for the resulting batch
-            of frames.
+            of frames. If the index is out of bounds (including negative
+            indices) an ``IndexError`` is raised.
         format : str
             If not None (default: rgb24), convert the data into the given format
             before returning it. If None return the data in the encoded format
@@ -715,6 +730,9 @@ class PyAVPlugin(PluginV3):
         (through ``filter_sequence`` or ``filter_graph``).
 
         """
+
+        if index is not ...:
+            check_frame_index(index, self._video_stream.frames or None)
 
         video_width = self._video_stream.codec_context.width
         video_height = self._video_stream.codec_context.height
@@ -796,8 +814,19 @@ class PyAVPlugin(PluginV3):
             variable_fps = bool(self._container.format.flags & 0x400)
             constant_framerate = not variable_fps
 
-        self._seek(index, constant_framerate=constant_framerate)
-        desired_frame = next(self._decoder)
+        # fail explicitly if the requested frame doesn't exist
+        check_frame_index(index, self._video_stream.frames or None)
+
+        try:
+            self._seek(index, constant_framerate=constant_framerate)
+            desired_frame = next(self._decoder)
+        except StopIteration:
+            # the container doesn't know its frame count and the stream
+            # ended before the requested index was reached
+            raise IndexError(
+                f"Index `{index}` is out of range. The video stream ended"
+                " before a frame with this index was reached."
+            ) from None
         self._next_idx += 1
 
         # useful flags defined on the frame

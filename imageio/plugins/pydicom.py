@@ -193,7 +193,7 @@ except ImportError as exc:  # pragma: no cover
     ) from exc
 
 from ..core.request import URI_BYTES, InitializationError, IOMode, Request
-from ..core.v3_plugin_api import ImageProperties, PluginV3
+from ..core.v3_plugin_api import ImageProperties, PluginV3, check_frame_index
 from ..typing import ArrayLike
 
 
@@ -349,6 +349,9 @@ class PydicomPlugin(PluginV3):
             Decoded pixels (always channel-last).
         """
         self._ensure_pixel_dataset()
+        if isinstance(index, int):
+            n_frames = int(getattr(self._dataset, "NumberOfFrames", 1))
+            check_frame_index(index, n_frames)
         frame_index = None if index in (Ellipsis, None) else index
         arr = np.asarray(
             pdcm.pixels.pixel_array(self._dataset, index=frame_index, raw=raw, **kwargs)
@@ -404,6 +407,8 @@ class PydicomPlugin(PluginV3):
         rows = int(self._dataset.Rows)
         cols = int(self._dataset.Columns)
         n_frames = int(getattr(self._dataset, "NumberOfFrames", 1))
+        if isinstance(index, int):
+            check_frame_index(index, n_frames)
         is_batch = index is Ellipsis or (index is None and n_frames > 1)
 
         # figure out how many channels are in the file
