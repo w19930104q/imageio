@@ -1,6 +1,8 @@
 import imageio as iio
 import pytest
 
+from imageio.core.legacy_plugin_wrapper import LegacyPlugin
+
 
 def test_exception_message_bytes():
     # regression test for: https://github.com/imageio/imageio/issues/694
@@ -51,3 +53,20 @@ def test_properties(test_images):
     assert p.shape == (150, 200, 4)
     assert p.n_images is None
     assert not p.is_batch
+
+
+def test_chunked_reading_unsupported_by_legacy_reader():
+    # Plugins whose v2 reader lacks the chunked API get a clear error.
+    plugin = object.__new__(LegacyPlugin)
+    plugin._request = None
+    plugin._format = type("F", (), {"name": "DUMMY"})()
+
+    class PlainReader:
+        pass
+
+    plugin.legacy_get_reader = lambda **kwargs: PlainReader()
+
+    with pytest.raises(NotImplementedError):
+        list(plugin.iter_chunks(4))
+    with pytest.raises(NotImplementedError):
+        plugin.read_chunk(0, 0, 1)

@@ -269,6 +269,48 @@ class LegacyPlugin(PluginV3):
         for image in reader:
             yield image
 
+    def iter_chunks(self, chunk_size, *, index=0, **kwargs):
+        """Iterate over an ndimage in memory-bounded chunks.
+
+        Streams the ndimage at ``index`` and yields slices of at most
+        ``chunk_size`` elements along its leading axis. Plugins whose legacy
+        reader does not implement chunked reading raise a ``NotImplementedError``.
+
+        Parameters
+        ----------
+        chunk_size : int
+            Maximum number of leading-axis elements per chunk.
+        index : int
+            The index of the ndimage inside the ImageResource.
+        kwargs : ...
+            Further keyword arguments are passed to the reader.
+
+        Yields
+        ------
+        chunk : numpy.ndarray
+            The chunks concatenate back into the whole ndimage.
+        """
+
+        reader = self.legacy_get_reader(**kwargs)
+        try:
+            iterator = reader.iter_chunks(chunk_size, index=index)
+        except AttributeError:
+            raise NotImplementedError(
+                f"The `{self._format.name}` plugin does not support chunked reading."
+            )
+        yield from iterator
+
+    def read_chunk(self, index, start, stop, **kwargs):
+        """Read a single leading-axis chunk of the ndimage at ``index``."""
+
+        reader = self.legacy_get_reader(**kwargs)
+        try:
+            return reader.read_chunk(index, start, stop)
+        except AttributeError:
+            raise NotImplementedError(
+                f"The `{self._format.name}` plugin does not support chunked reading."
+            )
+
     def properties(self, index=None):
         """Standardized ndimage metadata.
 
